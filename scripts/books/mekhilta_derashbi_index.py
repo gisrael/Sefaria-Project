@@ -5,14 +5,15 @@ import urllib
 import urllib2
 from urllib2 import URLError, HTTPError
 import json
+import base64
 
 sys.path.append("C:\\Users\\Izzy\\git\\Sefaria-Project")
 from sefaria.model import *
 
-apikey = ''
-server = 'dev.sefaria.org'
+# server = 'dev.sefaria.org'
+server = "localhost:8000"
 
-def post_texts_api(text_obj, ref):
+def post_texts_api(text_obj, ref, method="Post"):
     url = 'http://' + server + '/api/v2/raw/index/{}'.format(ref)
     json_text = json.dumps(text_obj)
     values = {
@@ -21,6 +22,7 @@ def post_texts_api(text_obj, ref):
     }
     data = urllib.urlencode(values)
     req = urllib2.Request(url, data)
+    req.get_method = lambda: method
     try:
         response = urllib2.urlopen(req)
         print response.read()
@@ -65,14 +67,22 @@ indx = {
     "schema": root.serialize()
 }
 
-# Index(indx).save()
+
+
+#Index(indx).save()
+# post_texts_api(indx, "Mekhilta%20DeRabbi%20Shimon%20Bar%20Yochai", "DELETE")
+
+
 post_texts_api(indx, "Mekhilta%20DeRabbi%20Shimon%20Bar%20Yochai")
 
 # Footnote Index
 footnote_index = {
     "title": "Footnotes",
+    "titleVariants": ["Footnotes"],
+    "heTitle": "הערות שוליים",
+    "heTitleVariants": ["הערות שוליים"],
     "categories": ["Commentary"]
 }
 
-# CommentaryIndex(footnote_index).save()
+# post_texts_api(footnote_index, "Footnotes%20on%20Mekhilta%DeRabbi%Shimon%Bar%Yochai", "DELETE")
 post_texts_api(footnote_index, "Footnotes")
