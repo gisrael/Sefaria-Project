@@ -101,6 +101,12 @@ class Index(abst.AbstractMongoRecord, AbstractIndex):
         "transliteratedTitle" # optional for old style
     ]
 
+    def __str__(self):
+        return u"Index: {}".format(self.title)
+
+    def __repr__(self):  # Wanted to use orig_tref, but repr can not include Unicode
+        return u"{}().load({{'title': '{}'}})".format(self.__class__.__name__, self.title)
+
     def save(self):
         if DISABLE_INDEX_SAVE:
             raise InputError("Index saving has been disabled on this system.")
@@ -186,9 +192,17 @@ class Index(abst.AbstractMongoRecord, AbstractIndex):
 
     '''         Alternate Title Structures          '''
     def set_alt_structure(self, name, struct_obj):
+        """
+        :param name: String
+        :param struct_obj:  :py.class:`TitledTreeNode`
+        :return:
+        """
         self.struct_objs[name] = struct_obj
 
     def get_alt_structure(self, name):
+        """
+        :returns: :py.class:`TitledTreeNode`
+        """
         return self.struct_objs.get(name)
 
     def get_alt_structures(self):
@@ -526,6 +540,13 @@ class CommentaryIndex(AbstractIndex):
         if getattr(self.nodes, "lengths", None):   #seems superfluous w/ nodes above
             self.length = self.nodes.lengths[0]
 
+    def __str__(self):
+        return u"{}: {} on {}".format(self.__class__.__name__, self.c_index.title, self.b_index.title)
+
+    def __repr__(self):  # Wanted to use orig_tref, but repr can not include Unicode
+        return u"{}({}, {})".format(self.__class__.__name__, self.c_index.title, self.b_index.title)
+
+
     def is_commentary(self):
         return True
 
@@ -728,6 +749,12 @@ class Version(abst.AbstractMongoRecord, AbstractTextRecord, AbstractSchemaConten
         "versionUrl"  # bad data?
     ]
 
+    def __str__(self):
+        return u"Version: {} <{}>".format(self.title, self.versionTitle)
+
+    def __repr__(self):  # Wanted to use orig_tref, but repr can not include Unicode
+        return u"{}().load({{'title': '{}', 'versionTitle': '{}'}})".format(self.__class__.__name__, self.title, self.versionTitle)
+
     def _validate(self):
         assert super(Version, self)._validate()
         """
@@ -769,14 +796,16 @@ class VersionSet(abst.AbstractMongoSet):
     def verse_count(self):
         return sum([v.verse_count() for v in self])
 
-    def merge(self, attr="chapter"):
+    def merge(self, node=None):
         """
         Returns merged result, but does not change underlying data
         """
         for v in self:
             if not getattr(v, "versionTitle", None):
                 logger.error("No version title for Version: {}".format(vars(v)))
-        return merge_texts([getattr(v, attr, []) for v in self], [getattr(v, "versionTitle", None) for v in self])
+        if node is None:
+            return merge_texts([getattr(v, "chapter", []) for v in self], [getattr(v, "versionTitle", None) for v in self])
+        return merge_texts([v.content_node(node) for v in self], [getattr(v, "versionTitle", None) for v in self])
 
 
 # used in VersionSet.merge(), merge_text_versions(), and export.export_merged()
@@ -880,8 +909,7 @@ class TextChunk(AbstractTextRecord):
                 self.text = self.trim_text(v.content_node(oref.index_node))
                 #todo: Should this instance, and the non-merge below, be made saveable?
             else:  # multiple versions available, merge
-                #todo: does the below work for complex texts?
-                merged_text, sources = vset.merge(oref.storage_address())  #todo: For commentaries, this merges the whole chapter.  It may show up as merged, even if our part is not merged.
+                merged_text, sources = vset.merge(oref.index_node)  #todo: For commentaries, this merges the whole chapter.  It may show up as merged, even if our part is not merged.
                 self.text = self.trim_text(merged_text)
                 if len(set(sources)) == 1:
                     for v in vset:
@@ -894,6 +922,18 @@ class TextChunk(AbstractTextRecord):
                     self._versions = vset.array()
         else:
             raise Exception("TextChunk requires a language.")
+
+    def __str__(self):
+        args = u"{}, {}".format(self._oref, self.lang)
+        if self.vtitle:
+            args += u", {}".format(self.vtitle)
+        return args
+
+    def __repr__(self):  # Wanted to use orig_tref, but repr can not include Unicode
+        args = u"{}, {}".format(self._oref, self.lang)
+        if self.vtitle:
+            args += u", {}".format(self.vtitle)
+        return u"{}({})".format(self.__class__.__name__, args)
 
     def is_empty(self):
         return bool(self.text)
@@ -1289,6 +1329,8 @@ class TextFamily(object):
         d["isComplex"]  = self.isComplex
         d["indexTitle"] = self._inode.index.title
         d["sectionRef"] = self._original_oref.section_ref().normal()
+        d["isSpanning"] = self._original_oref.is_spanning()
+
 
         for language, attr in self.text_attr_map.items():
             chunk = self._chunks.get(language)
@@ -1303,18 +1345,22 @@ class TextFamily(object):
                         else:
                             d[val[language]] = val.get("default")
 
-        # replace ints with daf strings (3->"2a") if text is Talmud or commentary on Talmud
-        if self._context_oref.is_talmud() and len(d["sections"]) > 0:
-            daf = d["sections"][0]
-            d["sections"][0] = AddressTalmud.toStr("en", daf)
-            d["title"] = d["book"] + " " + d["sections"][0]
+        # replace ints with daf strings (3->"2a") for Talmud addresses
+        # this could be simpler if was done for every value - but would be slower.
+        if "Talmud" in self._inode.addressTypes:
+            for i in range(len(d["sections"])):
+                if self._inode.addressTypes[i] == "Talmud":
+                    d["sections"][i] = AddressTalmud.toStr("en", d["sections"][i])
+                    if "toSections" in d:
+                        d["toSections"][i] = AddressTalmud.toStr("en", d["toSections"][i])
+
+            d["title"] = self._context_oref.normal()
             if "heTitle" in d:
                 d["heBook"] = d["heTitle"]
-                d["heTitle"] = d["heTitle"] + " " + AddressTalmud.toStr("he", daf)
-            if d["type"] == "Commentary" and len(d["sections"]) > 1:
+                d["heTitle"] = self._context_oref.he_normal()
+
+            if d["type"] == "Commentary" and self._context_oref.is_talmud() and len(d["sections"]) > 1:
                 d["title"] = "%s Line %d" % (d["title"], d["sections"][1])
-            if "toSections" in d:
-                d["toSections"] = [d["sections"][0]] + d["toSections"][1:]
 
         elif self._context_oref.is_commentary():
             dep = len(d["sections"]) if len(d["sections"]) < 2 else 2
@@ -1669,7 +1715,16 @@ class Ref(object):
 
         if len(parts) == 2:
             self.__init_ref_pointer_vars()  # clear out any mistaken partial representations
-            if self._lang == "en":
+            if self._lang == "he" or any([a != "Integer" for a in self.index_node.addressTypes[1:]]):     # in process. developing logic that should work for all languages / texts
+                # todo: handle sections names in "to" part.  Handle talmud יד א - ב kind of cases.
+                range_parts = re.split("[., ]+", parts[1])
+                delta = len(self.sections) - len(range_parts)
+                for i in range(delta, len(self.sections)):
+                    try:
+                        self.toSections[i] = self.index_node._addressTypes[i].toNumber(self._lang, range_parts[i - delta])
+                    except (ValueError, IndexError):
+                        raise InputError(u"Couldn't understand text sections: '{}'.".format(self.tref))
+            elif self._lang == "en":
                 if self.index_node.addressTypes[0] == "Talmud":
                     self.__parse_talmud_range(parts[1])
                 else:
@@ -1680,15 +1735,7 @@ class Ref(object):
                             self.toSections[i] = int(range_parts[i - delta])
                         except (ValueError, IndexError):
                             raise InputError(u"Couldn't understand text sections: '{}'.".format(self.tref))
-            elif self._lang == "he":     # in process. developing logic that should work for all languages / texts
-                # todo: handle sections names in "to" part.  Handle talmud יד א - ב kind of cases.
-                range_parts = re.split("[., ]+", parts[1])
-                delta = len(self.sections) - len(range_parts)
-                for i in range(delta, len(self.sections)):
-                    try:
-                        self.toSections[i] = self.index_node._addressTypes[i].toNumber(self._lang, range_parts[i - delta])
-                    except (ValueError, IndexError):
-                        raise InputError(u"Couldn't understand text sections: '{}'.".format(self.tref))
+
 
     def __get_sections(self, reg, tref, use_node=None):
         use_node = use_node or self.index_node
@@ -2140,18 +2187,24 @@ class Ref(object):
 
     def _iter_text_section(self, forward=True, depth_up=1):
         """
-        Used to iterate forwards or backwards to the next available ref in a text
+        Iterate forwards or backwards to the next available ref in a text
 
-        :param pRef: the ref object
         :param forward: Boolean indicating direction to iterate
         :depth_up: if we want to traverse the text at a higher level than most granular. defaults to one level above
-        :return: a ref
+        
+        :return: :class:`Ref`
         """
         if self.index_node.depth <= depth_up:  # if there is only one level of text, don't even waste time iterating.
             return None
 
         #arrays are 0 based. text sections are 1 based. so shift the numbers back.
-        starting_points = [s - 1 for s in self.sections[:self.index_node.depth - depth_up]]
+        if not forward:
+            # Going backward, start from begginning of Ref
+            starting_points = [s - 1 for s in self.sections[:self.index_node.depth - depth_up]]
+        else:
+            # Going forward start form end of Ref
+            starting_points = [s - 1 for s in self.toSections[:self.index_node.depth - depth_up]]
+
 
         #start from the next one
         if len(starting_points) > 0:

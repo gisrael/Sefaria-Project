@@ -11,22 +11,30 @@ var ReaderApp = React.createClass({
     return {
       currentFilter: this.props.initialFilter || [],
       recentFilters: [],
-      contents: contents
+      contents: contents,
+      settings: this.props.initialSettings || {
+        language: "english",
+        layout: "segmented",
+        color: "light",
+        fontSize: 62.5
+      }
     }
   },
   componentDidMount: function() {
     window.addEventListener("popstate", this.handlePopState);
     window.addEventListener("scroll", this.handleScroll);
+    window.addEventListener("click", this.handleClick);
 
     var hist = this.makeHistoryState()
     history.replaceState(hist.state, hist.title, hist.url);
   },
-  componentDidUpdate: function() {
-    this.updateHistoryState();
-  },
   componentWillUnmount: function() {
     window.removeEventListener("popstate", this.handlePopState);
     window.removeEventListener("scroll", this.handleScroll);
+    window.removeEventListener("click", this.handleClick);
+  },
+  componentDidUpdate: function() {
+    this.updateHistoryState();
   },
   shouldHistoryUpdate: function() {
     if (!history.state) { return true; }
@@ -57,18 +65,22 @@ var ReaderApp = React.createClass({
   },
   updateHistoryState: function() {
     if (this.shouldHistoryUpdate()) {
+      /*
       var current = this.state.contents.slice(-1)[0];
       if (current.type !== "TextColumn" || (history.state && history.state.type !== "TextColumn")) {
         // TODO - figure how do to without this timer which is needed because this function 
         // gets called before the TextSegments containted within are rendered.
         setTimeout(function() { $(window).scrollTop(current.scrollTop) }.bind(this), 5);        
       }
+      */
       var hist = this.makeHistoryState();
       history.pushState(hist.state, hist.title, hist.url);
     }
   },
   handlePopState: function(event) {
-    this.setState({contents: [event.state]});
+    if (event.state) {
+      this.setState({contents: [event.state]});
+    }
   },
   handleScroll: function(event) {
     if (this.state.contents.length) {
@@ -77,6 +89,14 @@ var ReaderApp = React.createClass({
     }
     this.adjustInfiniteScroll();
   },
+  handleClick: function(event) {
+    if ($(event.target).hasClass("refLink")) {
+      var ref = $(event.target).attr("data-ref");
+      this.showBaseText(ref);
+      event.stopPropagation();
+      event.preventDefault();
+    }
+  },
   adjustInfiniteScroll: function() {
     var current = this.state.contents[this.state.contents.length-1];
     if (current.type === "TextColumn") {
@@ -84,7 +104,6 @@ var ReaderApp = React.createClass({
       var lastTop      = $lastText.offset().top;
       var lastBottom   =  lastTop + $lastText.outerHeight();
       var windowBottom = $(window).scrollTop() + $(window).height();
-      //console.log("lt: " + lastTop + ", lb: " + lastBottom + ", wb: " + windowBottom)
       if (lastTop > (windowBottom + 100) && current.refs.length > 1) { 
         // Remove a section scroll out of view on bottom
         current.refs = current.refs.slice(0,-1);
@@ -92,9 +111,9 @@ var ReaderApp = React.createClass({
       } else if ( lastBottom < (windowBottom + 0)) {
         // Add the next section
         currentRef = current.refs.slice(-1)[0];
-        nextRef    = sjs.library.text(currentRef).next;
-        if (nextRef) {
-          current.refs.push(nextRef);
+        data       = sjs.library.text(currentRef);
+        if (data && data.next) {
+          current.refs.push(data.next);
           this.setState({contents: this.state.contents});
         }
       }
@@ -144,7 +163,7 @@ var ReaderApp = React.createClass({
       } else {
         var sectionRef = sjs.library.text(current.ref)[direction];
         if (sectionRef) {
-          sjs.library.text(sectionRef, function(data) {
+          sjs.library.text(sectionRef, {}, function(data) {
               if (direction === "prev") {
                 var segment = Math.max(data.text.length, data.he.length);
                 var segment = sjs.library.text(sectionRef + ":" + segment);
@@ -158,7 +177,6 @@ var ReaderApp = React.createClass({
         }
       }
     }
-    $(window).scrollTop(0);
   },
   navNext: function() {
     this.navigateReader("next");
@@ -166,15 +184,63 @@ var ReaderApp = React.createClass({
   navPrevious: function() {
     this.navigateReader("prev");
   },
+  setOption: function(option, value) {
+    if (option === "fontSize") {
+      var step = 1.15;
+      var size = this.state.settings.fontSize;
+      value = (value === "smaller" ? size/step : size*step);
+      this.state.settings.fontSize = value;
+    } else {
+      this.state.settings[option] = value;
+    }
+
+    this.setState({settings: this.state.settings});
+    $.cookie(option, value);
+    if (option === "language") {
+      $.cookie("contentLang", value);
+    }
+
+    if (option === "color") {
+      // Needed because of the footer space left by base.html, remove after switching bases
+      $("body").removeClass("light sepia dark").addClass(value);
+    }
+  },
+  setScrollTop: function() {
+    var current = this.state.contents.slice(-1)[0];
+    if (current.scrollTop) {
+      $(window).scrollTop(current.scrollTop);
+    } else if ($(".segment.highlight").length) {
+      var top = $(".segment.highlight").first().position().top - ($(window).height() / 3);
+      $(window).scrollTop(top);
+    } else {
+      $(window).scrollTop(0);
+    }
+  },
+  currentBook: function() {
+    var item = this.state.contents.slice(-1)[0];
+    var ref  = item.ref || item.refs.slice(-1)[0];
+    var book = sjs.library.text(ref).book;
+    return book;
+  },
   render: function() {
+    var classes = {};
+    classes[this.state.settings.layout]   = 1;
+    classes[this.state.settings.language] = 1;
+    classes[this.state.settings.color]    = 1;
+    classes = cx(classes);
+    style = {"fontSize": this.state.settings.fontSize + "%"};
     var items = this.state.contents.slice(-1).map(function(item, i) {
       if (item.type === "TextColumn") {
         return item.refs.map(function(ref, k) {
           return (<TextRange 
             sref={ref}
             basetext={true}
+            withContext={true}
             loadLinks={true}
             prefetchNextPrev={true}
+            settings={this.state.settings}
+            setOption={this.setOption}
+            setScrollTop={this.setScrollTop}
             showBaseText={this.showBaseText} 
             showTextList={this.showTextList} 
             key={ref} />);      
@@ -187,6 +253,7 @@ var ReaderApp = React.createClass({
             currentFilter={this.state.currentFilter}
             recentFilters={this.state.recentFilters}
             setFilter={this.setFilter}
+            setScrollTop={this.setScrollTop}
             showTextList={this.showTextList}
             showBaseText={this.showBaseText} 
             key={item.ref} />
@@ -194,38 +261,180 @@ var ReaderApp = React.createClass({
       }
     }.bind(this));
     return (
-      <div id="readerApp">
-        <ReaderControls 
+      <div id="readerApp" className={classes}>
+        <ReaderControls
           navNext={this.navNext}
-          navPrevious={this.navPrevious} />
-        {items}
+          navPrevious={this.navPrevious}
+          currentBook={this.currentBook}
+          settings={this.state.settings}
+          setOption={this.setOption} />
+          <div id="readerContent" style={style}>
+            {items}
+          </div>
       </div>
     );
   }
 });
 
+
 var ReaderControls = React.createClass({
   getInitialState: function() {
-    return { 
+    return {
+      open: false
     };
   },
   showOptions: function(e) {
-    setTimeout(function() { sjs.showOptionsBar(); }, 5);
+    this.setState({open: true});
+  },
+  hideOptions: function() {
+    this.setState({open: false});
+  },
+  openNav: function(e) {
+    e.stopPropagation();
+    $("#navPanel").addClass("navPanelOpen")
+  },
+  openTextToc: function() {
+    var book = this.props.currentBook();
+    var url  = normRef(book);
+    window.location = "/" + url;
   },
   render: function() {
+    var languageOptions = [
+      {name: "english", image: "/static/img/english.png" },
+      {name: "bilingual", image: "/static/img/bilingual.png" },
+      {name: "hebrew", image: "/static/img/hebrew.png" }
+    ];
+    var languageToggle = (
+        <ToggleSet
+          name="language"
+          options={languageOptions}
+          setOption={this.props.setOption}
+          settings={this.props.settings} />);
+    
+    var layoutOptions = [
+      {name: "continuous", image: "/static/img/paragraph.png" },
+      {name: "segmented", image: "/static/img/lines.png" },
+    ];
+    var layoutToggle = this.props.settings.language !== "bilingual" ? 
+      (<ToggleSet
+          name="layout"
+          options={layoutOptions}
+          setOption={this.props.setOption}
+          settings={this.props.settings} />) : "";
+
+    var colorOptions = [
+      {name: "light", content: "" },
+      {name: "sepia", content: "" },
+      {name: "dark", content: "" }
+    ];
+    var colorToggle = (
+        <ToggleSet
+          name="color"
+          separated={true}
+          options={colorOptions}
+          setOption={this.props.setOption}
+          settings={this.props.settings} />);
+
+    var sizeOptions = [
+      {name: "smaller", content: "Aa" },
+      {name: "larger", content: "Aa"  }
+    ];
+    var sizeToggle = (
+        <ToggleSet
+          name="fontSize"
+          options={sizeOptions}
+          setOption={this.props.setOption}
+          settings={this.props.settings} />);
+
+    var readerOptions = !this.state.open ? "" : (
+      <div id="readerOptionsPanel">
+        {languageToggle}
+        {layoutToggle}
+        <div className="line"></div>
+        {colorToggle}
+        {sizeToggle}
+      </div>);
+
     return (
-      <div id="readerControls">
-        <div id="readerPrevious"
-              className="controlsButton"
-              onClick={this.props.navPrevious}><i className="fa fa-caret-up"></i></div>
-        <div id="readerNext" 
-              className="controlsButton" 
-              onClick={this.props.navNext}><i className="fa fa-caret-down"></i></div>
-        <div id="readerOptions"
-              className="controlsButton"
-              onClick={this.showOptions}><i className="fa fa-bars"></i></div>
+      <div>
+        <div id="readerControls">
+          <div id="readerControlsRight">
+            <div id="readerPrevious"
+                  className="controlsButton"
+                  onClick={this.props.navPrevious}><i className="fa fa-caret-up"></i></div>
+            <div id="readerNext" 
+                  className="controlsButton" 
+                  onClick={this.props.navNext}><i className="fa fa-caret-down"></i></div>
+            <div id="readerOptions"
+                  className="controlsButton"
+                  onClick={this.showOptions}><i className="fa fa-bars"></i></div>
+          </div>
+
+          <div id="readerControlsLeft">
+            <div id="readerNav"
+                  className="controlsButton"
+                  onClick={this.openNav}><i className="fa fa-search"></i></div>
+            <div id="readerTextToc"
+                  className="controlsButton"
+                  onClick={this.openTextToc}><i className="fa fa-book"></i></div>
+          </div>
+        </div>
+        {readerOptions}
+        {this.state.open ? (<div id="mask" onClick={this.hideOptions}></div>) : ""}
       </div>
+
     );
+  }
+});
+
+
+var ToggleSet = React.createClass({
+  getInitialState: function() {
+    return {};
+  },
+  render: function() {
+    var classes = cx({toggleSet: 1, separated: this.props.separated });
+    var width = 100.0 - (this.props.separated ? (this.props.options.length - 1) * 3 : 0);
+    var style = {width: (width/this.props.options.length) + "%"};
+    return (
+      <div id={this.props.name} className={classes}>
+        {
+          this.props.options.map(function(option) {
+            return (
+              <ToggleOption
+                name={option.name}
+                key={option.name}
+                set={this.props.name}
+                on={this.props.settings[this.props.name] == option.name}
+                setOption={this.props.setOption}
+                style={style}
+                image={option.image}
+                content={option.content} />);
+          }.bind(this))
+        }
+      </div>);
+  }
+});
+
+
+var ToggleOption = React.createClass({
+  getInitialState: function() {
+    return {};
+  },
+  handleClick: function() {
+    this.props.setOption(this.props.set, this.props.name);
+  },
+  render: function() {
+    var classes = cx({toggleOption: 1, on: this.props.on });
+    var content = this.props.image ? (<img src={this.props.image} />) : this.props.content;
+    return (
+      <div
+        id={this.props.name}
+        className={classes}
+        style={this.props.style}
+        onClick={this.handleClick}>
+        {content}
+      </div>);
   }
 });
 
@@ -235,71 +444,112 @@ var TextRange = React.createClass({
     return { 
       segments: [],
       sref: this.props.sref,
+      loaded: false,
       data: {ref: this.props.sref},
-      flowLayout: true
     };
   },
   componentDidMount: function() {
     this.getText();
     if (this.props.basetext) { 
       this.placeSegmentNumbers();
+      this.props.setScrollTop();
     }
     window.addEventListener('resize', this.handleResize);
   },
-  componentDidUpdate: function() {
+  componentDidUpdate: function(prevProps, prevState) {
     if (this.props.basetext) { 
       this.placeSegmentNumbers();
+    }
+    if (this.props.basetext && !prevState.loaded) {
+      this.props.setScrollTop();
     }
   },
   componentWillUnmount: function() {
     window.removeEventListener('resize', this.handleResize);
   },
   getText: function() {
-    sjs.library.text(this.state.sref, this.loadText);
+    settings = {
+      context: this.props.withContext
+    };
+    sjs.library.text(this.state.sref, settings, this.loadText);
   },
-  loadText: function(data) {
+  makeSegments: function(data) {
+    // Returns a flat list of annotated segment objects,
+    // derived from the walking the text in data
+    var segments  = [];
+    var highlight = data.sections.length === data.textDepth; 
     var wrap = (typeof data.text == "string");
     var en = wrap ? [data.text] : data.text;
     var he = wrap ? [data.he] : data.he;
-
-    // Pad the shorter array to make stepping through them easier.
-    var length = Math.max(en.length, he.length);
+    var topLength = Math.max(en.length, he.length);
     en = en.pad(length, "");
     he = he.pad(length, "");
 
-    var segments = [];
-    var start = data.textDepth == data.sections.length ? data.sections[data.textDepth] : 1;
-    for (var i = 0; i < length; i++) {
-      var ref = data.ref + ":" + (i+start);
-      segments.push({
-        en: en[i], 
-        he: he[i], 
-        ref: ref,
-        linkCount: sjs.library.linkCount(ref)
-      });
+    var start = (data.textDepth == data.sections.length && !this.props.withContext ?
+                  data.sections.slice(-1)[0] : 1);
+
+    if (!data.isSpanning) {
+      for (var i = 0; i < topLength; i++) {
+        var number = i+start;
+        var ref = data.sectionRef + ":" + number;
+        segments.push({
+          ref: ref,
+          en: en[i], 
+          he: he[i],
+          number: number,
+          highlight: highlight && number >= data.sections.slice(-1)[0] && number <= data.toSections.slice(-1)[0],
+          linkCount: this.props.basetext ? sjs.library.linkCount(ref) : 0
+        });
+      }      
+    } else {
+      for (var n = 0; n < topLength; n++) {
+        var wrap = (typeof en == "string");
+        var en2 = wrap ? [en[n]] : en[n];
+        var he2 = wrap ? [he[n]] : he[n];
+        var length = Math.max(en2.length, he2.length);
+        en2 = en2.pad(length, "");
+        he2 = he2.pad(length, "");
+        var baseRef = data.book + " " + data.sections.slice(0,-2).join(":");
+        console.log(baseRef);
+        start = (n == 0 ? start : 1);
+        for (var i = 0; i < length; i++) {
+          var section = n+data.sections.slice(-2)[0];
+          var number  = i+start;
+          var ref = baseRef + ":" + section + ":" + number;
+          segments.push({
+            ref: ref,
+            en: en2[i], 
+            he: he2[i],
+            number: number,
+            highlight: highlight && 
+                        ((n == 0 && number >= data.sections.slice(-1)[0]) || 
+                         (n == topLength-1 && number <= data.toSections.slice(-1)[0]) ||
+                         (n > 0 && n < topLength -1)),
+            linkCount: this.props.basetext ? sjs.library.linkCount(ref) : 0
+          });
+        }
+      }
     }
-    var flowLayout = data.categories[0] === "Tanach" ||
-                      data.categories[0] === "Talmud" &&
-                      data.book !== "Psalms";
+    return segments;
+  },
+  loadText: function(data) {
+    var segments  = this.makeSegments(data);
+
     this.setState({
       data: data,
       segments: segments,
+      loaded: true,
       sref: data.ref,
-      flowLayout: flowLayout
     });
 
-    if (this.props.loadLinks && !sjs.library.linksLoaded(data.ref)) {
+    if (this.props.loadLinks && !sjs.library.linksLoaded(data.sectionRef)) {
       // Calling when links are loaded will overwrite state.segments
-      sjs.library.bulkLoadLinks(data.ref, this.loadLinkCounts);
+      sjs.library.bulkLoadLinks(data.sectionRef, this.loadLinkCounts);
     }
 
     if (this.props.prefetchNextPrev) {
-      if (data.next) {
-        sjs.library.text(data.next, function() {});
-      }
-      if (data.prev) {
-        sjs.library.text(data.prev, function() {});
-      }
+      if (data.next) { sjs.library.text(data.next, {}, function() {}); }
+      if (data.prev) { sjs.library.text(data.prev, {}, function() {}); }
     }
   },
   loadLinkCounts: function() {
@@ -326,18 +576,7 @@ var TextRange = React.createClass({
   },
   handleClick: function() {
     if (this.props.openOnClick) {
-      var sectionRef = sjs.library.text(this.props.sref).sectionRef;
-      this.props.showBaseText(sectionRef);
-    }
-  },
-  nextSection: function() {
-    if (this.state.data.next) {
-      this.props.showBaseText(this.state.data.next);
-    }
-  },
-  previousSection: function () {
-    if (this.state.data.prev) {
-      this.props.showBaseText(this.state.data.prev);
+      this.props.showBaseText(this.props.sref);
     }
   },
   render: function() {
@@ -348,12 +587,18 @@ var TextRange = React.createClass({
             sref={segment.ref}
             en={segment.en}
             he={segment.he}
-            segmentNumber={this.props.basetext ? i+1 : 0}
+            highlight={segment.highlight}
+            segmentNumber={this.props.basetext ? segment.number : 0}
             linkCount={segment.linkCount}
             showTextList={this.props.showTextList} />
       );
     }.bind(this));
-    var classes = cx({textRange: 1, basetext: this.props.basetext, flowLayout: this.state.flowLayout });
+    var classes = {textRange: 1, basetext: this.props.basetext };
+    if (this.props.settings) {
+      classes[this.props.settings.layout] = 1;
+      classes[this.props.settings.language] = 1;
+    }
+    classes = cx(classes);
     return (
       <div className={classes} onClick={this.handleClick}>
         <div className="title">
@@ -379,13 +624,14 @@ var TextSegment = React.createClass({
     var linkCount = this.props.linkCount ? (<span className="linkCount">{this.props.linkCount}</span>) : "";
     var segmentNumber = this.props.segmentNumber ? (<span className="segmentNumber">{this.props.segmentNumber}</span>) : "";          
     var he = this.props.he || "<span class='enOnly'>" + this.props.en + "</span>";
-    var en = this.props.en || "<span class='heOnly'>" + this.props.he + "</span>";
-
+    var en = sjs.wrapRefLinks(this.props.en);
+    var en = en || "<span class='heOnly'>" + this.props.he + "</span>";
+    var classes=cx({segment: 1, highlight: this.props.highlight});
     return (
-      <span className="segment" onClick={this.handleClick}>
+      <span className={classes} onClick={this.handleClick}>
         {segmentNumber}
         {linkCount}
-        <span className="he" dangerouslySetInnerHTML={ {__html: he+ " "} }></span>
+        <span className="he" dangerouslySetInnerHTML={ {__html: he + " "} }></span>
         <span className="en" dangerouslySetInnerHTML={ {__html: en + " "} }></span>
       </span>
     );
@@ -411,7 +657,7 @@ var TextList = React.createClass({
   componentDidMount: function() {
     this.loadConnections();
     if (this.props.main) {
-      $(window).scrollTop(0);
+      this.props.setScrollTop();
       this.setTopPadding();
     }
   },
@@ -421,24 +667,24 @@ var TextList = React.createClass({
     }
   },
   componetWillUpdate: function() {
-    $(window).scrollTop(0);
+    this.props.setScrollTop();
   },
   toggleFilter: function(filter) {
     this.setState({filter: this.state.filter.toggle(filter)});
   },
   setTopPadding: function() {
-    var $textList = $(React.findDOMNode(this));
+    var $textList    = $(React.findDOMNode(this));
     var $textListTop = $textList.find(".textListTop");
     var top = $textListTop.outerHeight();
     $textList.css({paddingTop: top});
   },
   showAllFilters: function() {
     this.setState({showAllFilters: true});
+    $(window).scrollTop(0);
   },
   hideAllFilters: function() {
     this.setState({showAllFilters: false});
     $(window).scrollTop(0);
-
   },
   backToText: function() {
     this.props.showBaseText();
@@ -454,28 +700,29 @@ var TextList = React.createClass({
                 $.inArray(link.commentator, this.props.currentFilter) !== -1 );
     }.bind(this)).map(function(link) { 
       return link.sourceRef; 
-    }).sort();
-    var texts = this.state.loaded ? 
-                  (refs.length ? 
-                  refs.map(function(ref) {
-                  return (
-                    <TextRange 
-                      sref={ref}
-                      key={ref} 
-                      basetext={false}
-                      showBaseText={this.props.showBaseText}
-                      openOnClick={true} />
-                    );
-                 }, this) : (<div className='textListMessage'>No connections known.</div>)) : 
-                            (<div className='textListMessage'>Loading...</div>);
+    }).sort(function(a, b) {
+      return a > b;
+    });
+    var message = !this.state.loaded ? (<div className='textListMessage'>Loading...</div>)  : 
+                    (refs.length == 0 ? (<div className='textListMessage'>No connections known.</div>) : "");
+    var texts = (refs.map(function(ref) {
+                      return (
+                        <TextRange 
+                          sref={ref}
+                          key={ref} 
+                          basetext={false}
+                          showBaseText={this.props.showBaseText}
+                          openOnClick={true} />
+                        );
+                    }, this)); 
     return (
       <div className={classes}>
         <div className="textListTop">
           <div className="anchorText">
             <div className="textBox" onClick={this.backToText}>
               <TextRange sref={this.props.sref} />
+              <div className="fader"></div>
             </div>
-            <div className="fader"></div>
           </div>
           {this.state.showAllFilters ? "" : 
           <TopFilterSet 
@@ -489,6 +736,7 @@ var TextList = React.createClass({
             setTopPadding={this.setTopPadding}
             summary={summary}
             totalCount={count} />}
+        {message}
         </div>
         {this.state.showAllFilters ?
         <AllFilterSet 
@@ -527,14 +775,18 @@ var TopFilterSet = React.createClass({
   render: function() {
     var topLinks = sjs.library.topLinks(this.props.sref);
 
-    // Filter top links for items already in recent filter
+    // Filter top links to exclude items already in recent filter
     topLinks = topLinks.filter(function(link) {
       return ($.inArray(link.book, this.props.recentFilters) == -1);
     }.bind(this));
     
     // Annotate filter texts with category            
     var recentFilters = this.props.recentFilters.map(function(filter) {
-      return {book: filter, category: sjs.library.textCategory(filter) };
+      var index = sjs.library.index(filter);
+      return {
+          book: filter,
+          heBook: index ? index.heTitle : sjs.library.hebrewCategory(filter),
+          category: index ? index.categories[0] : filter };
     });
     topLinks = recentFilters.concat(topLinks).slice(0,5);
 
@@ -546,17 +798,18 @@ var TopFilterSet = React.createClass({
             topLinks[i].category == filter ) { break; }
       }
       if (i == topLinks.length) {
-        var annotatedFilter = {book: filter, category: sjs.library.textCategory(filter) };
+        var index = sjs.library.index(filter);
+        var annotatedFilter = {book: filter, heBook: index.heTitle, category: index.categories[0] };
         topLinks = [annotatedFilter].concat(topLinks).slice(0,5);
       } else {
         // topLinks.move(i, 0); 
       }        
     }
-
     var topFilters = topLinks.map(function(book) {
      return (<TextFilter 
                 key={book.book} 
-                book={book.book} 
+                book={book.book}
+                heBook={book.heBook}
                 category={book.category}
                 hideCounts={true}
                 count={book.count}
@@ -571,8 +824,11 @@ var TopFilterSet = React.createClass({
       topFilters.push(<div className="showMoreFilters textFilter" 
                           style={style}
                           onClick={this.props.showAllFilters}>
-                            <span>More &gt;</span>
-                    </div>);
+                            <div>
+                              <span className="en">More &gt;</span>
+                              <span className="he">עוד &gt;</span>
+                            </div>                    
+                      </div>);
     }
 
     return (
@@ -599,7 +855,8 @@ var AllFilterSet = React.createClass({
       return (
         <CategoryFilter 
           key={i}
-          category={cat.category} 
+          category={cat.category}
+          heCategory={sjs.library.hebrewCategory(cat.category)}
           count={cat.count} 
           books={cat.books}
           filter={this.props.filter}
@@ -627,7 +884,8 @@ var CategoryFilter = React.createClass({
     var textFilters = this.props.books.map(function(book, i) {
      return (<TextFilter 
                 key={book.book} 
-                book={book.book} 
+                book={book.book}
+                heBook={book.heBook} 
                 count={book.count}
                 category={this.props.category}
                 hideColors={true}
@@ -637,13 +895,15 @@ var CategoryFilter = React.createClass({
                 on={$.inArray(book.book, this.props.filter) !== -1} />);
     }.bind(this));
     
-    var color = sjs.categoryColors[this.props.category] || sjs.palette.pink;
-    var style = {"borderTop": "4px solid " + color};
+    var color   = sjs.categoryColors[this.props.category] || sjs.palette.pink;
+    var style   = {"borderTop": "4px solid " + color};
     var classes = cx({categoryFilter: 1, on: this.props.on});
+    var count   = (<span className="enInHe">{this.props.count}</span>);
     return (
       <div className="categoryFilterGroup" style={style}>
         <div className={classes} onClick={this.handleClick}>
-          {this.props.category} | {this.props.count}
+          <span className="en">{this.props.category} | {count}</span>
+          <span className="he">{this.props.heCategory} | {count}</span>
         </div>
         <TwoBox content={ textFilters } />
       </div>
@@ -666,15 +926,18 @@ var TextFilter = React.createClass({
       var color = sjs.categoryColors[this.props.category] || sjs.palette.pink;
       var style = {"borderTop": "4px solid " + color};
     }
-    var count = this.props.hideCounts ? "" : 
-      ( <span> ({this.props.count})</span>);
+    var name = this.props.book == this.props.category ? this.props.book.toUpperCase() : this.props.book;
+    var count = this.props.hideCounts ? "" : ( <span className="enInHe"> ({this.props.count})</span>);
     return (
       <div 
         className={classes} 
         key={this.props.book} 
         style={style}
         onClick={this.handleClick}>
-        {this.props.book}{count}
+          <div>  
+            <span className="en">{name}{count}</span>
+            <span className="he">{this.props.heBook}{count}</span>
+          </div>
       </div>
     );
   }

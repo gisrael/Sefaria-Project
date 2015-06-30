@@ -28,7 +28,7 @@ from sefaria.model import *
 from sefaria.sheets import LISTED_SHEETS, get_sheets_for_ref
 from sefaria.utils.users import user_link, user_started_text
 from sefaria.utils.util import list_depth, text_preview
-from sefaria.utils.hebrew import hebrew_plural, hebrew_term, encode_hebrew_numeral, encode_hebrew_daf
+from sefaria.utils.hebrew import hebrew_plural, hebrew_term, encode_hebrew_numeral, encode_hebrew_daf, is_hebrew, strip_cantillation
 from sefaria.utils.talmud import section_to_daf, daf_to_section
 import sefaria.utils.calendars
 import sefaria.tracker as tracker
@@ -58,7 +58,10 @@ def reader(request, tref, lang=None, version=None):
             return reader_redirect(uref, lang, version)
 
         # Return Text TOC if this is a bare text title
-        if (not getattr(oref.index_node, "depth", None)) or (oref.sections == [] and oref.index_node.depth > 1):
+        # or a schema node with multip sections underneath it
+        if (not getattr(oref.index_node, "depth", None) 
+                or (oref.sections == [] and 
+                    (oref.index.title == uref or oref.index_node.depth > 1))):
             return text_toc(request, oref)
 
         # BANDAID - for spanning refs, return the first section
@@ -132,7 +135,7 @@ def reader(request, tref, lang=None, version=None):
     layout      = request.GET.get("layout") if request.GET.get("layout") in ("heLeft", "heRight") else "heLeft"
     sidebarLang = request.GET.get('sidebarLang', None) or request.COOKIES.get('sidebarLang', "all")
     sidebarLang = {"all": "sidebarAll", "he": "sidebarHebrew", "en": "sidebarEnglish"}.get(sidebarLang, "sidebarAll")
-    lexicon = request.GET.get('lexicon', 0)
+    lexicon     = request.GET.get('lexicon', 0)
 
     template_vars = {'text': text,
                      'hasSidebar': hasSidebar,
@@ -160,11 +163,18 @@ def reader(request, tref, lang=None, version=None):
     return render_to_response('reader.html', template_vars, RequestContext(request))
 
 
-def s2(request, ref="Genesis 1"):
+def s2(request, ref="Genesis 1", version=None, lang=None):
     """
     New interfaces in development
     """
-    return render_to_response('s2.html', {"ref": ref}, RequestContext(request))
+    oref         = Ref(ref)
+    text         = TextFamily(oref, version=version, lang=lang, commentary=False, context=False, pad=True, alts=True).contents()
+    text["next"] = oref.next_section_ref().normal() if oref.next_section_ref() else None
+    text["prev"] = oref.prev_section_ref().normal() if oref.prev_section_ref() else None
+    return render_to_response('s2.html', {
+                                            "ref": oref.normal(),
+                                            "data": text
+                                        }, RequestContext(request))
 
 
 @catch_error_as_http
@@ -301,9 +311,9 @@ def text_toc(request, oref):
         :param he_toc - jagged int array of available counts in hebrew
         :param en_toc - jagged int array of available counts in english
         :param labels - list of section names for levels corresponding to toc
+        :param addresses - list of address types, from Index record
         :param ref - text to prepend to final links. Starts with text title, recursively adding sections.
-        :param talmud = whether to create final refs with daf numbers
-        :param zoom - sets how many levels of final depth to summarize 
+        :param zoom - sets how many levels of final depth to summarize
         (e.g., 1 will hide verses and only show chapter level)
         """
         he_toc = [] if isinstance(he_toc, int) else he_toc
@@ -314,7 +324,7 @@ def text_toc(request, oref):
         depth = list_depth(he_toc, deep=True)
 
         # todo: have this use the address classes in schema.py
-        talmud = (addresses[0] == "Talmud")
+        talmudBase = (len(addresses) > 0 and addresses[0] == "Talmud")
 
         html = ""
         if depth == zoom + 1:
@@ -323,12 +333,12 @@ def text_toc(request, oref):
                 klass = "he%s en%s" %(available_class(he_toc[i]), available_class(en_toc[i]))
                 if klass == "heNone enNone":
                     continue
-                en_section   = section_to_daf(i+1) if talmud else str(i+1)
-                he_section   = encode_hebrew_daf(en_section) if talmud else encode_hebrew_numeral(int(en_section), punctuation=False)
+                en_section   = section_to_daf(i+1) if talmudBase else str(i+1)
+                he_section   = encode_hebrew_daf(en_section) if talmudBase else encode_hebrew_numeral(int(en_section), punctuation=False)
                 section_html = "<span class='en'>%s</span><span class='he'>%s</span>" % (en_section, he_section)
                 path = "%s.%s" % (ref, en_section)
                 if zoom > 1:  # Make links point to first available content
-                    prev_section = section_to_daf(i) if talmud else str(i)
+                    prev_section = section_to_daf(i) if talmudBase else str(i)
                     path = Ref(ref + "." + prev_section).next_section_ref().url()
                 html += '<a class="sectionLink %s" href="/%s">%s</a>' % (klass, urlquote(path), section_html)
             if html:
@@ -341,10 +351,10 @@ def text_toc(request, oref):
         else:
             # We're above terminal level, list sections and recur
             for i in range(length):
-                section = section_to_daf(i + 1) if talmud else str(i + 1)
+                section = section_to_daf(i + 1) if talmudBase else str(i + 1)
                 section_html = make_toc_html(he_toc[i], en_toc[i], labels[1:], addresses[1:], ref + "." + section, zoom=zoom)
                 if section_html:
-                    he_section = encode_hebrew_daf(section) if talmud else encode_hebrew_numeral(int(section), punctuation=False)
+                    he_section = encode_hebrew_daf(section) if talmudBase else encode_hebrew_numeral(int(section), punctuation=False)
                     html += "<div class='tocSection'>"
                     html += "<div class='sectionName'>"
                     html += "<span class='en'>" + labels[0] + " " + section + "</span>"
@@ -929,6 +939,8 @@ def lock_text_api(request, title, lang, version):
 
 @catch_error_as_json
 def dictionary_api(request, word):
+    if is_hebrew(word):
+        word = strip_cantillation(word)
     form = WordForm().load({"form": word})
     if form:
         result = []
@@ -1465,28 +1477,27 @@ def dashboard(request):
 
 @catch_error_as_http
 @ensure_csrf_cookie
-def translation_requests(request, completed=False):
+def translation_requests(request, completed_only=False, featured_only=False):
     """
     Page listing all outstnading translation requests.
     """
-    page             = int(request.GET.get("page", 1)) - 1
-    page_size        = 100
-    query            = {"completed": False, "section_level": False} if not completed else {"completed": True}
-    requests         = TranslationRequestSet(query, limit=page_size, page=page, sort=[["request_count", -1]])
-    request_count    = TranslationRequestSet({"completed": False, "section_level": False}).count()
-    complete_count   = TranslationRequestSet({"completed": True}).count()
-    next_page        = page + 2 if True or requests.count() == page_size else 0
-    featured_query   = {"featured": True, "featured_until": { "$gt": datetime.now() } }
-    featured         = TranslationRequestSet(featured_query, sort=[["completed", 1], ["featured_until", 1]])
-    today            = datetime.today()
-    featured_end     = today + timedelta(7 - ((today.weekday()+1) % 7)) # This coming Sunday
-    featured_end     = featured_end.replace(hour=0, minute=0)  # At midnight
-    current          = [d.featured_until <= featured_end for d in featured]
-    featured_current = sum(current)
-    show_featured    = not completed and not page and ((request.user.is_staff and featured.count()) or (featured_current))
-
-    print featured_end
-    print [d.featured_until for d in featured]
+    page              = int(request.GET.get("page", 1)) - 1
+    page_size         = 100
+    query             = {"completed": False, "section_level": False} if not completed_only else {"completed": True}
+    query             = {"completed": True, "featured": True} if completed_only and featured_only else query
+    requests          = TranslationRequestSet(query, limit=page_size, page=page, sort=[["request_count", -1]])
+    request_count     = TranslationRequestSet({"completed": False, "section_level": False}).count()
+    complete_count    = TranslationRequestSet({"completed": True}).count()
+    featured_complete = TranslationRequestSet({"completed": True, "featured": True}).count()
+    next_page         = page + 2 if True or requests.count() == page_size else 0
+    featured_query    = {"featured": True, "featured_until": { "$gt": datetime.now() } }
+    featured          = TranslationRequestSet(featured_query, sort=[["completed", 1], ["featured_until", 1]])
+    today             = datetime.today()
+    featured_end      = today + timedelta(7 - ((today.weekday()+1) % 7)) # This coming Sunday
+    featured_end      = featured_end.replace(hour=0, minute=0)  # At midnight
+    current           = [d.featured_until <= featured_end for d in featured]
+    featured_current  = sum(current)
+    show_featured     = not completed_only and not page and ((request.user.is_staff and featured.count()) or (featured_current))
 
     return render_to_response('translation_requests.html',
                                 {
@@ -1495,8 +1506,10 @@ def translation_requests(request, completed=False):
                                     "show_featured": show_featured,
                                     "requests": requests,
                                     "request_count": request_count,
-                                    "completed": completed,
+                                    "completed_only": completed_only,
                                     "complete_count": complete_count,
+                                    "featured_complete": featured_complete,
+                                    "featured_only": featured_only,
                                     "next_page": next_page,
                                     "page_offset": page * page_size
                                 },
@@ -1507,7 +1520,14 @@ def completed_translation_requests(request):
     """
     Wrapper for listing completed translations requests.
     """
-    return translation_requests(request, completed=True)
+    return translation_requests(request, completed_only=True)
+
+
+def completed_featured_translation_requests(request):
+    """
+    Wrapper for listing completed translations requests.
+    """
+    return translation_requests(request, completed_only=True, featured_only=True)
 
 
 def translation_request_api(request, tref):
